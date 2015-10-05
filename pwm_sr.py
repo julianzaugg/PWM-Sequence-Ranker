@@ -59,10 +59,10 @@ LONGEST_ALN_LENGTH = 0
 def _create_pwms(pseudo_count, trim_threshold):
     global PWMS, ALIGNMENT_TRIM_INDICES, LONGEST_ALN_LENGTH
     for name, alignment in PWM_ALIGNMENTS.iteritems():
-        aln_length = len(alignment)
-        if aln_length > LONGEST_ALN_LENGTH:
-            LONGEST_ALN_LENGTH = aln_length
-        if aln_length == 1 or trim_threshold == 1.0:
+        aln_n_seqs = len(alignment)
+        if alignment.alignlen > LONGEST_ALN_LENGTH:
+            LONGEST_ALN_LENGTH = alignment.alignlen
+        if aln_n_seqs == 1 or trim_threshold == 1.0:
             trim_start, trim_end = 0, None
         else:
             trim_start, trim_end = _find_trim_idxs(alignment, trim_threshold)
@@ -70,10 +70,24 @@ def _create_pwms(pseudo_count, trim_threshold):
         PWMS[name] = PWM(alignment, pseudo=pseudo_count, start=trim_start, end=trim_end)
 
 def _find_trim_idxs(an_alignment, gap_threshold):
+    """
+    Calculate the indices/positions of columns in the pwm alignment that have
+    too many gaps (determined by the gap_threshold). Specifically identifies
+    the continuous sets of column indices within the full list of gappy columns and
+    will return the highest of the first set and the lowest of the last set.
+    Example:
+    bad_columns = [0,1,2,3,4,7,8,9]
+    bad_column_sets = [[0,1,2,3,4], [7,8,9]]
+    return values = 4,7
+    :param an_alignment: a sequence alignments
+    :param gap_threshold: float between 0 and 1, determines percentage of gaps allowed in column
+    :return: index_low, index_high
+    """
     bad_columns = []
     for i in xrange(an_alignment.alignlen):
         column_vals = an_alignment.get_column(i)
         counts = Counter(column_vals)
+        # Calculate percentage of gaps in column
         if "-" in counts and counts["-"]/float(len(an_alignment)) >= gap_threshold:
             bad_columns.append(i)
     if len(bad_columns) == 0:
@@ -139,15 +153,13 @@ def _score_query_sequences():
             rank_index = 0
             while rank_index < int(N_BG_SEQS):
                 # FIXME? - why do these have to be converted to floats for this statement to work?
-                if float(bg_scores[rank_index]) <= float(match_score):
+                # if float(bg_scores[rank_index]) <= float(match_score):
+                if float(bg_scores[rank_index]) < float(match_score):
                     # Best rank found (since ordered we can stop at first instance)
                     break
                 rank_index += 1
             QUERY_SEQ_RANKS[pwm_name][q_seq.name] = rank_index
             if rank_index < QUERY_SEQ_BEST[q_seq.name][2] and match_score != 0.0:
-                # if pwm_name == "Group24":
-                #     print q_seq.name, pwm_name, rank_index, match_score
-                #     print bg_scores
                 QUERY_SEQ_BEST[q_seq.name] = (pwm_name, match_score, rank_index)
 ####################################################################################
 
@@ -173,6 +185,11 @@ def _save_best_query_scores(location):
             print >> fh, "%s\t%s\t%f\t%i" % (q_seq_name, best_results[0], best_results[1],
                                              QUERY_SEQ_RANKS[best_results[0]][q_seq_name])
 
+def _save_trim_indices(location):
+    with open(location, 'w') as fh:
+        print >> fh, "Group\tStart\tEnd"
+        for group_name, idxs in ALIGNMENT_TRIM_INDICES.iteritems():
+            print >> fh, "%s\t%s\t%s" % (group_name, str(idxs[0]), str(idxs[1]))
 
 ####################################################################################
 def _is_valid_file(parser, arg):
@@ -228,10 +245,12 @@ def process_args(my_parser, my_args):
     _load_alignments(my_args.alignments)
     print "Creating PWMS"
     _create_pwms(my_args.pwm_pseudo, my_args.trim_threshold)
+    print "Saving trim indices"
+    _save_trim_indices(my_args.output + "pwm_trim_locations.txt")
 
     # Load background sequences or, if score file supplied, load the scores
     if my_args.backgroundseqs:
-        BACKGROUND_SEQS = read_fasta_file(my_args.backgroundseqs, Protein_Alphabet)[:1000]  # also acts a file check
+        BACKGROUND_SEQS = read_fasta_file(my_args.backgroundseqs, Protein_Alphabet)  # also acts a file check
         N_BG_SEQS = len(BACKGROUND_SEQS)
         print "Scoring background sequences (this might take several hours depending on length and number of sequences)"
         _score_background_sequences()
@@ -252,6 +271,7 @@ def process_args(my_parser, my_args):
     # Score each query sequence
     print "Scoring and ranking query sequences"
     _score_query_sequences()
+    print "Saving query results"
     _save_query_scores(my_args.output + "query_all_scores.txt")
     _save_best_query_scores(my_args.output + "query_best_scores.txt")
 
@@ -274,7 +294,7 @@ if __name__ == "__main__":
     parser.add_argument('-tt', '--trim_threshold', help='Trim columns from the PWM alignments that have gaps over '
                                                         'the specified percentage, must be 0-1', required=False,
                                                         type=_restricted_trim, default=1.0)
-    parser.add_argument('-pp', '--pwm_pseudo', help='Pseudo count for PWM', type=int, required=False, default=0.0)
+    parser.add_argument('-pp', '--pwm_pseudo', help='Pseudo count for PWM', type=float, required=False, default=0.0)
     # parser.add_argument('-v', '--verbose', required=False, default=False)
     args = parser.parse_args()
     process_args(parser, args)
