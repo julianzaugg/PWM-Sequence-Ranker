@@ -20,6 +20,8 @@ from itertools import groupby
 from operator import itemgetter
 import os
 import annotation
+import string
+import random
 
 from sequence import *
 
@@ -52,15 +54,20 @@ PWMS = defaultdict()
 # Group/Alignment name : Start_idx, End_idx
 ALIGNMENT_TRIM_INDICES = defaultdict()
 
-def _create_pwms(trim_threshold):
-    global PWMS, ALIGNMENT_TRIM_INDICES
+LONGEST_ALN_LENGTH = 0
+
+def _create_pwms(pseudo_count, trim_threshold):
+    global PWMS, ALIGNMENT_TRIM_INDICES, LONGEST_ALN_LENGTH
     for name, alignment in PWM_ALIGNMENTS.iteritems():
-        if len(alignment) == 1 or trim_threshold == 1.0:
+        aln_length = len(alignment)
+        if aln_length > LONGEST_ALN_LENGTH:
+            LONGEST_ALN_LENGTH = aln_length
+        if aln_length == 1 or trim_threshold == 1.0:
             trim_start, trim_end = 0, None
         else:
             trim_start, trim_end = _find_trim_idxs(alignment, trim_threshold)
         ALIGNMENT_TRIM_INDICES[name] = trim_start, trim_end
-        PWMS[name] = PWM(alignment, pseudo=0.0, start=trim_start, end=trim_end)
+        PWMS[name] = PWM(alignment, pseudo=pseudo_count, start=trim_start, end=trim_end)
 
 def _find_trim_idxs(an_alignment, gap_threshold):
     bad_columns = []
@@ -130,17 +137,17 @@ def _score_query_sequences():
             # Now calculate rank vs the background
             bg_scores = ORDERED_BACKGROUND_SCORES[pwm_name]
             rank_index = 0
-            cnt = 0
-            while rank_index < N_BG_SEQS:
+            while rank_index < int(N_BG_SEQS):
                 # FIXME? - why do these have to be converted to floats for this statement to work?
                 if float(bg_scores[rank_index]) <= float(match_score):
-                # if bg_scores[rank_index] <= match_score:
                     # Best rank found (since ordered we can stop at first instance)
                     break
-                cnt = cnt + 1
                 rank_index += 1
             QUERY_SEQ_RANKS[pwm_name][q_seq.name] = rank_index
             if rank_index < QUERY_SEQ_BEST[q_seq.name][2] and match_score != 0.0:
+                # if pwm_name == "Group24":
+                #     print q_seq.name, pwm_name, rank_index, match_score
+                #     print bg_scores
                 QUERY_SEQ_BEST[q_seq.name] = (pwm_name, match_score, rank_index)
 ####################################################################################
 
@@ -163,7 +170,8 @@ def _save_best_query_scores(location):
     with open(location, 'w') as fh:
         print >> fh, "Name\tGroup\tScore\tRank"
         for q_seq_name, best_results in QUERY_SEQ_BEST.iteritems():
-            print >> fh, "%s\t%s\t%f\t%i" % (q_seq_name, best_results[0], best_results[1],  best_results[2])
+            print >> fh, "%s\t%s\t%f\t%i" % (q_seq_name, best_results[0], best_results[1],
+                                             QUERY_SEQ_RANKS[best_results[0]][q_seq_name])
 
 
 ####################################################################################
@@ -181,20 +189,45 @@ def _dir_check(directory):
     if not os.path.exists(directory):
         raise StandardError("The directory %s does not exist or the location was incorrectly specified" % directory)
 
+
+def _generateRandomStringID(length=5, alpha=None, seed=None):
+    """
+    @param length: length of string
+    @return: string
+    """
+    if seed:
+        random.seed(seed)
+    if not alpha:
+        alpha = string.ascii_uppercase + string.digits
+    return ''.join(random.choice(alpha) for x in range(length))
+
+def _generate_random_sequences(amount):
+    seeds = range(1, amount+1)  # seed can't equal 0
+    random_sequences = [Sequence(_generateRandomStringID(LONGEST_ALN_LENGTH,Protein_Alphabet, seed=i),
+                                 name=_generateRandomStringID(6, seed=i), alpha=Protein_Alphabet) for i in seeds]
+    return random_sequences
+
+def _log_parameters(location, args):
+    with open(location, 'w') as fh:
+        print >> fh, "#Parameters used"
+        for arg, value in sorted(vars(args).items()):
+            print >> fh, "Argument %s: %r" % (arg, value)
+
 def process_args(my_parser, my_args):
     global QUERY_SEQS, BACKGROUND_SEQS, BACKGROUND_SCORES, ORDERED_BACKGROUND_SCORES, N_BG_SEQS
     # Check files
     _dir_check(my_args.output)
     _is_valid_file(my_parser, my_args.query)
     _is_valid_file(my_parser, my_args.alignments)
-
+    # Save the parameter values
+    _log_parameters(my_args.output + "parameter_log.txt", my_args)
     # Load query sequence/s
     print "Loading Query sequences"
     QUERY_SEQS = read_fasta_file(my_args.query, Protein_Alphabet)
     print "Loading Alignments"
     _load_alignments(my_args.alignments)
     print "Creating PWMS"
-    _create_pwms(my_args.trim_threshold)
+    _create_pwms(my_args.pwm_pseudo, my_args.trim_threshold)
 
     # Load background sequences or, if score file supplied, load the scores
     if my_args.backgroundseqs:
@@ -203,11 +236,15 @@ def process_args(my_parser, my_args):
         print "Scoring background sequences (this might take several hours depending on length and number of sequences)"
         _score_background_sequences()
         _save_background_scores(my_args.output + "bg_score_file.txt")
-
     elif my_args.backgroundfile:
         print "Loading background score file"
         _load_background_score_file(my_args.backgroundfile)
-
+    elif my_args.backgroundnumber:
+        print "Generate %i random sequences of length %i" % (my_args.backgroundnumber, LONGEST_ALN_LENGTH)
+        BACKGROUND_SEQS = _generate_random_sequences(my_args.backgroundnumber)
+        N_BG_SEQS = my_args.backgroundnumber
+        _score_background_sequences()
+        _save_background_scores(my_args.output + "bg_score_file.txt")
     # We store just the ordered scores for each group to scan across
     for group_name, bg_seq_scores_dict in BACKGROUND_SCORES.iteritems():
         ORDERED_BACKGROUND_SCORES[group_name] = sorted(bg_seq_scores_dict.values())[::-1]
@@ -237,6 +274,9 @@ if __name__ == "__main__":
     parser.add_argument('-tt', '--trim_threshold', help='Trim columns from the PWM alignments that have gaps over '
                                                         'the specified percentage, must be 0-1', required=False,
                                                         type=_restricted_trim, default=1.0)
-    parser.add_argument('-v', '--verbose', required=False, default=False)
+    parser.add_argument('-pp', '--pwm_pseudo', help='Pseudo count for PWM', type=int, required=False, default=0.0)
+    # parser.add_argument('-v', '--verbose', required=False, default=False)
     args = parser.parse_args()
     process_args(parser, args)
+
+
