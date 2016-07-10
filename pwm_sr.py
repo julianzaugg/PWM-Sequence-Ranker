@@ -97,9 +97,31 @@ def _find_trim_idxs(an_alignment, gap_threshold):
     if len(bad_columns) == 0:
         return 0, None
     bad_columns_split = []
+    """
+    Identify the separate bad column sets. The way this works is
+    we minus the column index (identified above) from the enumeration
+    index value. Since the enumeration starts from 0, each bad column will be
+    a certain negative value difference from the enumeration index. Consecutive
+    runs of bad columns will have the same difference to their respective enumeration indices.
+    For example, if bad_columns = [1,2,3,4,7,8,9,11,12,15,19], the groups we get are:
+        -1 [(0, 1), (1, 2), (2, 3), (3, 4)]
+        -3 [(4, 7), (5, 8), (6, 9)]
+        -4 [(7, 11), (8, 12)]
+        -6 [(9, 15)]
+        -9 [(10, 19)]
+    itemgetter(1) simply pulls out the 1th value from the above tuples for each group (g) and
+    returns a list of the values:
+        -1 [1, 2, 3, 4]
+        -3 [7, 8, 9]
+        -4 [11, 12]
+        -6 [15]
+        -9 [19]
+    """
     for f, g in groupby(enumerate(bad_columns), lambda (x, y): x-y):
         bad_columns_split.append(map(itemgetter(1), g))
     if len(bad_columns_split) == 1:
+        # If there is only 1 consecutive run of bad columns, determine if it is in the first or
+        # second half of the alignment
         if bad_columns_split[0][0] >= .5 * an_alignment.alignlen:
             return 0, bad_columns_split[0][0] + 1
         return bad_columns_split[0][-1] + 1, None
