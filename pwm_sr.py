@@ -27,6 +27,7 @@ from sequence import *
 
 
 QUERY_SEQS = None
+QUERY_SEQS_DICT = dict()  # FIXME - change QUERY_SEQS to a dict so we don't have to have this as well
 # Group/Alignment name : {Sequence Name : Score}
 QUERY_SEQ_SCORES_ALL = defaultdict(lambda: defaultdict(float))
 
@@ -37,6 +38,7 @@ QUERY_SEQ_BEST = defaultdict(lambda: (None, 0, 100000000000))
 QUERY_SEQ_RANKS = defaultdict(lambda: defaultdict(int))
 
 BACKGROUND_SEQS = None
+BACKGROUND_SEQS_DICT = dict()  # FIXME - change BACKGROUND_SEQS to a dict so we don't have to have this as well
 N_BG_SEQS = None
 
 # Group/Alignment name : {Sequence Name : Score}
@@ -56,6 +58,8 @@ ALIGNMENT_TRIM_INDICES = defaultdict()
 
 LONGEST_ALN_LENGTH = 0
 
+###############################################################################
+#                                  PWM
 def _create_pwms(pseudo_count, trim_threshold):
     global PWMS, ALIGNMENT_TRIM_INDICES, LONGEST_ALN_LENGTH
     for name, alignment in PWM_ALIGNMENTS.iteritems():
@@ -96,11 +100,14 @@ def _find_trim_idxs(an_alignment, gap_threshold):
     for f, g in groupby(enumerate(bad_columns), lambda (x, y): x-y):
         bad_columns_split.append(map(itemgetter(1), g))
     if len(bad_columns_split) == 1:
-        if bad_columns_split[0][0] >= int(.5) * an_alignment.alignlen:
+        if bad_columns_split[0][0] >= .5 * an_alignment.alignlen:
             return 0, bad_columns_split[0][0] + 1
         return bad_columns_split[0][-1] + 1, None
     # TODO - investigate whether we need to +1 on start AND -1 on end? I think just +1 to start.
     return bad_columns_split[0][-1] + 1, bad_columns_split[-1][0]
+
+###############################################################################
+#                                  LOADING
 
 def _load_background_score_file(location):
     """
@@ -130,16 +137,21 @@ def _load_alignments(location):
     else:
         raise StandardError("Error Loading PWM alignments")
 
-####################################################################################
+###############################################################################
+#                                  SCORING
 def _score_background_sequences():
     global BACKGROUND_SCORES
     cnt = 0
     for bg_seq in BACKGROUND_SEQS:
-        print "Scoring background sequence %i\t%s" % (cnt, bg_seq.name)
-        for pwm_name, pwm in PWMS.iteritems():
-            match_score, match_index = pwm.maxscore(bg_seq)
-            BACKGROUND_SCORES[pwm_name][bg_seq.name] = match_score
-        cnt += 1
+        try:
+            print "Scoring background sequence %i\t%s" % (cnt, bg_seq.name)
+            for pwm_name, pwm in PWMS.iteritems():
+                match_score, match_index = pwm.maxscore(bg_seq)
+                BACKGROUND_SCORES[pwm_name][bg_seq.name] = match_score
+            cnt += 1
+        except Exception:
+            print "Sequence %s cannot be processed" % bg_seq.name
+
 
 def _score_query_sequences():
     global QUERY_SEQ_SCORES_ALL, QUERY_SEQ_SCORES_BEST, ORDERED_BACKGROUND_SCORES, QUERY_SEQ_RANKS
@@ -161,29 +173,34 @@ def _score_query_sequences():
             QUERY_SEQ_RANKS[pwm_name][q_seq.name] = rank_index
             if rank_index < QUERY_SEQ_BEST[q_seq.name][2] and match_score != 0.0:
                 QUERY_SEQ_BEST[q_seq.name] = (pwm_name, match_score, rank_index)
-####################################################################################
+###############################################################################
+#                                  SAVING
 
 def _save_background_scores(location):
     with open(location, 'w') as fh:
-        print >> fh, "Name\tGroup\tScore"
+        print >> fh, "Name\tGroup\tScore\tSequence"
         for group_name, b_seq_dict in BACKGROUND_SCORES.iteritems():
             for b_seq_name, b_seq_score in b_seq_dict.iteritems():
-                print >> fh, "%s\t%s\t%f" % (b_seq_name, group_name, b_seq_score)
+                print >> fh, "%s\t%s\t%f\t%s" % (b_seq_name, group_name, b_seq_score,
+                                             BACKGROUND_SEQS_DICT[b_seq_name].sequence)
 
 def _save_query_scores(location):
     global QUERY_SEQ_RANKS, QUERY_SEQ_SCORES_ALL
     with open(location, 'w') as fh:
-        print >> fh, "Name\tGroup\tScore\tRank"
+        print >> fh, "Name\tGroup\tScore\tRank\tSequence"
         for group_name, q_seq_dict in QUERY_SEQ_SCORES_ALL.iteritems():
             for q_seq_name, score in q_seq_dict.iteritems():
-                print >> fh, "%s\t%s\t%f\t%i" % (q_seq_name, group_name, score, QUERY_SEQ_RANKS[group_name][q_seq_name])
+                print >> fh, "%s\t%s\t%f\t%i\t%s" % (q_seq_name, group_name, score,
+                                                 QUERY_SEQ_RANKS[group_name][q_seq_name],
+                                                 QUERY_SEQS_DICT[q_seq_name].sequence)
 
 def _save_best_query_scores(location):
     with open(location, 'w') as fh:
-        print >> fh, "Name\tGroup\tScore\tRank"
+        print >> fh, "Name\tGroup\tScore\tRank\tSequence"
         for q_seq_name, best_results in QUERY_SEQ_BEST.iteritems():
-            print >> fh, "%s\t%s\t%f\t%i" % (q_seq_name, best_results[0], best_results[1],
-                                             QUERY_SEQ_RANKS[best_results[0]][q_seq_name])
+            print >> fh, "%s\t%s\t%f\t%i\t%s" % (q_seq_name, best_results[0], best_results[1],
+                                             QUERY_SEQ_RANKS[best_results[0]][q_seq_name],
+                                             QUERY_SEQS_DICT[q_seq_name].sequence)
 
 def _save_trim_indices(location):
     with open(location, 'w') as fh:
@@ -191,7 +208,8 @@ def _save_trim_indices(location):
         for group_name, idxs in ALIGNMENT_TRIM_INDICES.iteritems():
             print >> fh, "%s\t%s\t%s" % (group_name, str(idxs[0]), str(idxs[1]))
 
-####################################################################################
+###############################################################################
+#                                  MISC
 def _is_valid_file(parser, arg):
     """Check if arg is a valid file that already exists on the file
        system.
@@ -221,7 +239,7 @@ def _generateRandomStringID(length=5, alpha=None, seed=None):
 def _generate_random_sequences(amount):
     seeds = range(1, amount+1)  # seed can't equal 0
     random_sequences = [Sequence(_generateRandomStringID(LONGEST_ALN_LENGTH,Protein_Alphabet, seed=i),
-                                 name=_generateRandomStringID(6, seed=i), alpha=Protein_Alphabet) for i in seeds]
+                                 name=_generateRandomStringID(8, seed=i), alpha=Protein_Alphabet) for i in seeds]
     return random_sequences
 
 def _log_parameters(location, args):
@@ -229,6 +247,20 @@ def _log_parameters(location, args):
         print >> fh, "#Parameters used"
         for arg, value in sorted(vars(args).items()):
             print >> fh, "Argument %s: %r" % (arg, value)
+
+def _check_sequences(seqs):
+    good = []
+    for seq in seqs:
+        bad = False
+        for aa in seq:
+            if aa not in Protein_Alphabet:
+                print "Sequence %s cannot be processed, it will be ignored" % seq.name
+                bad = True
+                break
+        if bad:
+            continue
+        good.append(seq)
+    return good
 
 def process_args(my_parser, my_args):
     global QUERY_SEQS, BACKGROUND_SEQS, BACKGROUND_SCORES, ORDERED_BACKGROUND_SCORES, N_BG_SEQS
@@ -241,16 +273,21 @@ def process_args(my_parser, my_args):
     # Load query sequence/s
     print "Loading Query sequences"
     QUERY_SEQS = read_fasta_file(my_args.query, Protein_Alphabet)
+    for q_seq in QUERY_SEQS:
+        QUERY_SEQS_DICT[q_seq.name] = q_seq
     print "Loading Alignments"
     _load_alignments(my_args.alignments)
     print "Creating PWMS"
     _create_pwms(my_args.pwm_pseudo, my_args.trim_threshold)
     print "Saving trim indices"
     _save_trim_indices(my_args.output + "pwm_trim_locations.txt")
-
     # Load background sequences or, if score file supplied, load the scores
     if my_args.backgroundseqs:
         BACKGROUND_SEQS = read_fasta_file(my_args.backgroundseqs, Protein_Alphabet)  # also acts a file check
+        print "Checking sequences"
+        BACKGROUND_SEQS = _check_sequences(BACKGROUND_SEQS)
+        for bg_seq in BACKGROUND_SEQS:
+            BACKGROUND_SEQS_DICT[bg_seq.name] = bg_seq
         N_BG_SEQS = len(BACKGROUND_SEQS)
         print "Scoring background sequences (this might take several hours depending on length and number of sequences)"
         _score_background_sequences()
@@ -259,8 +296,10 @@ def process_args(my_parser, my_args):
         print "Loading background score file"
         _load_background_score_file(my_args.backgroundfile)
     elif my_args.backgroundnumber:
-        print "Generate %i random sequences of length %i" % (my_args.backgroundnumber, LONGEST_ALN_LENGTH)
+        print "Generating %i random sequences of length %i" % (my_args.backgroundnumber, LONGEST_ALN_LENGTH)
         BACKGROUND_SEQS = _generate_random_sequences(my_args.backgroundnumber)
+        for bg_seq in BACKGROUND_SEQS:
+            BACKGROUND_SEQS_DICT[bg_seq.name] = bg_seq
         N_BG_SEQS = my_args.backgroundnumber
         _score_background_sequences()
         _save_background_scores(my_args.output + "bg_score_file.txt")
